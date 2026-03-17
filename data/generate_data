@@ -1,0 +1,177 @@
+"""
+generate_data.py
+----------------
+Generates synthetic data for the Manager Effectiveness Analysis project.
+Produces two CSV files:
+  - survey_responses.csv  : Individual employee survey ratings per manager
+  - team_outcomes.csv     : Team-level attrition, engagement, and performance metrics
+
+The data is designed to reflect the real-world findings of Google Project Oxygen,
+where higher manager effectiveness scores correlate with better team outcomes.
+
+Usage:
+    python data/generate_data.py
+"""
+
+import numpy as np
+import pandas as pd
+
+RANDOM_SEED = 42
+NUM_MANAGERS = 60
+MIN_TEAM_SIZE = 6
+MAX_TEAM_SIZE = 15
+
+# The 8 core behaviors from Google Project Oxygen
+OXYGEN_BEHAVIORS = [
+    "good_coach",
+    "empowers_team",
+    "inclusive_environment",
+    "results_oriented",
+    "good_communicator",
+    "supports_career_development",
+    "clear_vision",
+    "technical_competence",
+]
+
+DEPARTMENTS = ["Engineering", "Sales", "Operations", "Marketing", "Finance", "People"]
+
+MANAGER_FIRST_NAMES = [
+    "Amara", "David", "Fatima", "James", "Ngozi", "Samuel", "Aisha", "Michael",
+    "Chioma", "Robert", "Yetunde", "Daniel", "Blessing", "Andrew", "Kemi",
+    "Joshua", "Adaeze", "Emmanuel", "Tolu", "Benjamin", "Sade", "Christopher",
+    "Funmi", "Matthew", "Nneka", "William", "Ifeoma", "Charles", "Bisi", "Joseph",
+    "Amina", "Richard", "Taiwo", "Thomas", "Yemi", "Henry", "Dayo", "George",
+    "Lola", "Paul", "Abike", "Kevin", "Remi", "Brian", "Hauwa", "Eric",
+    "Temi", "Steven", "Jumoke", "Patrick",
+    "Nadia", "Marcus", "Zainab", "Derek", "Halima", "Victor", "Efua", "Adrian",
+    "Seun", "Leonard",
+]
+
+MANAGER_LAST_NAMES = [
+    "Okonkwo", "Smith", "Ibrahim", "Johnson", "Adeyemi", "Williams", "Nwosu",
+    "Brown", "Eze", "Jones", "Babatunde", "Davis", "Osei", "Miller", "Chukwu",
+    "Wilson", "Afolabi", "Moore", "Mensah", "Taylor", "Okeke", "Anderson",
+    "Diallo", "Thomas", "Okafor", "Jackson", "Asante", "White", "Onyeka",
+    "Harris", "Lawal", "Martin", "Musa", "Thompson", "Olawale", "Garcia",
+    "Adeleke", "Martinez", "Obiora", "Robinson", "Nkemelu", "Clark", "Sule",
+    "Rodriguez", "Amadi", "Lewis", "Oluwole", "Lee", "Uchenna", "Walker",
+    "Achebe", "Hall", "Gidado", "Allen", "Ihejirika", "Young", "Obi",
+    "Hernandez", "Adeola", "King",
+]
+
+
+def generate_manager_base_scores(rng):
+    """
+    Assign each manager a latent true effectiveness level drawn from a
+    normal distribution. This latent score drives both survey responses
+    and team outcomes, creating realistic correlations across the dataset.
+    """
+    # Latent effectiveness on a 0-1 scale
+    latent = rng.beta(a=5, b=3, size=NUM_MANAGERS)  # slightly right-skewed
+    return latent
+
+
+def generate_survey_responses(manager_ids, latent_scores, team_sizes, rng):
+    """
+    Simulate employee survey responses for each manager.
+    Each employee rates their manager on all 8 Oxygen behaviors (scale 1 to 5).
+    Ratings are driven by the manager's latent score plus individual noise.
+    """
+    records = []
+    response_id = 1
+
+    for i, (mgr_id, latent, team_size) in enumerate(
+        zip(manager_ids, latent_scores, team_sizes)
+    ):
+        for _ in range(team_size):
+            row = {"response_id": response_id, "manager_id": mgr_id}
+            for behavior in OXYGEN_BEHAVIORS:
+                # Map latent (0-1) to a mean rating around 1.5 to 4.5
+                mean_rating = 1.5 + latent * 3.0
+                # Add per-behavior variation for this manager
+                behavior_mean = mean_rating + rng.normal(0, 0.3)
+                # Add individual respondent noise
+                raw = behavior_mean + rng.normal(0, 0.6)
+                # Clip and round to integer 1-5
+                row[behavior] = int(np.clip(round(raw), 1, 5))
+            records.append(row)
+            response_id += 1
+
+    return pd.DataFrame(records)
+
+
+def generate_team_outcomes(manager_ids, latent_scores, departments, rng):
+    """
+    Simulate team-level outcomes driven by manager effectiveness.
+
+    Attrition rate   : higher effectiveness -> lower attrition
+    Engagement score : higher effectiveness -> higher engagement (0-100)
+    Performance score: higher effectiveness -> higher performance (0-100)
+    """
+    records = []
+    for mgr_id, latent, dept in zip(manager_ids, latent_scores, departments):
+        # Attrition: base 25%, reduced by effectiveness, with noise
+        attrition = max(0.02, 0.25 - 0.18 * latent + rng.normal(0, 0.03))
+        attrition = round(min(attrition, 0.45), 3)
+
+        # Engagement: base 40, boosted by effectiveness, with noise
+        engagement = 40 + 45 * latent + rng.normal(0, 5)
+        engagement = round(float(np.clip(engagement, 10, 100)), 1)
+
+        # Performance: base 45, boosted by effectiveness, with noise
+        performance = 45 + 40 * latent + rng.normal(0, 5)
+        performance = round(float(np.clip(performance, 10, 100)), 1)
+
+        records.append(
+            {
+                "manager_id": mgr_id,
+                "department": dept,
+                "team_attrition_rate": attrition,
+                "team_engagement_score": engagement,
+                "team_performance_score": performance,
+            }
+        )
+
+    return pd.DataFrame(records)
+
+
+def main():
+    rng = np.random.default_rng(RANDOM_SEED)
+
+    # Build manager table
+    first_names = rng.choice(MANAGER_FIRST_NAMES, size=NUM_MANAGERS, replace=False)
+    last_names = rng.choice(MANAGER_LAST_NAMES, size=NUM_MANAGERS, replace=False)
+    manager_names = [f"{f} {l}" for f, l in zip(first_names, last_names)]
+    manager_ids = [f"MGR{str(i+1).zfill(3)}" for i in range(NUM_MANAGERS)]
+    departments = rng.choice(DEPARTMENTS, size=NUM_MANAGERS)
+    team_sizes = rng.integers(MIN_TEAM_SIZE, MAX_TEAM_SIZE + 1, size=NUM_MANAGERS)
+
+    latent_scores = generate_manager_base_scores(rng)
+
+    # Manager reference table
+    managers_df = pd.DataFrame(
+        {
+            "manager_id": manager_ids,
+            "manager_name": manager_names,
+            "department": departments,
+            "team_size": team_sizes,
+        }
+    )
+    managers_df.to_csv("data/managers.csv", index=False)
+    print(f"Saved data/managers.csv  ({len(managers_df)} managers)")
+
+    # Survey responses
+    survey_df = generate_survey_responses(manager_ids, latent_scores, team_sizes, rng)
+    survey_df.to_csv("data/survey_responses.csv", index=False)
+    print(
+        f"Saved data/survey_responses.csv  ({len(survey_df)} individual survey responses)"
+    )
+
+    # Team outcomes
+    outcomes_df = generate_team_outcomes(manager_ids, latent_scores, departments, rng)
+    outcomes_df.to_csv("data/team_outcomes.csv", index=False)
+    print(f"Saved data/team_outcomes.csv  ({len(outcomes_df)} team records)")
+
+
+if __name__ == "__main__":
+    main()
