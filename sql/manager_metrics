@@ -1,0 +1,254 @@
+-- =============================================================================
+-- manager_metrics.sql
+-- Manager Effectiveness Analysis  |  Google Project Oxygen Framework
+-- Author: Tobi Abanishe
+-- =============================================================================
+-- These queries are written for a standard SQL environment (PostgreSQL compatible).
+-- They assume three tables loaded from the project CSVs:
+--   managers         (manager_id, manager_name, department, team_size)
+--   survey_responses (response_id, manager_id, good_coach, empowers_team,
+--                     inclusive_environment, results_oriented,
+--                     good_communicator, supports_career_development,
+--                     clear_vision, technical_competence)
+--   team_outcomes    (manager_id, department, team_attrition_rate,
+--                     team_engagement_score, team_performance_score)
+-- =============================================================================
+
+
+-- -----------------------------------------------------------------------------
+-- QUERY 1: Average behavior scores per manager
+-- Aggregates all individual survey responses into one row per manager.
+-- -----------------------------------------------------------------------------
+
+SELECT
+    s.manager_id,
+    m.manager_name,
+    m.department,
+    m.team_size,
+    COUNT(s.response_id)                          AS total_responses,
+    ROUND(AVG(s.good_coach), 2)                   AS avg_good_coach,
+    ROUND(AVG(s.empowers_team), 2)                AS avg_empowers_team,
+    ROUND(AVG(s.inclusive_environment), 2)        AS avg_inclusive_environment,
+    ROUND(AVG(s.results_oriented), 2)             AS avg_results_oriented,
+    ROUND(AVG(s.good_communicator), 2)            AS avg_good_communicator,
+    ROUND(AVG(s.supports_career_development), 2)  AS avg_supports_career_development,
+    ROUND(AVG(s.clear_vision), 2)                 AS avg_clear_vision,
+    ROUND(AVG(s.technical_competence), 2)         AS avg_technical_competence
+FROM survey_responses s
+JOIN managers m ON s.manager_id = m.manager_id
+GROUP BY
+    s.manager_id,
+    m.manager_name,
+    m.department,
+    m.team_size
+ORDER BY s.manager_id;
+
+
+-- -----------------------------------------------------------------------------
+-- QUERY 2: Composite effectiveness score per manager
+-- The composite score is the simple mean of all 8 behavior averages.
+-- It is scaled from 1 to 5 and then normalized to 0 to 100 for readability.
+-- -----------------------------------------------------------------------------
+
+WITH behavior_averages AS (
+    SELECT
+        manager_id,
+        AVG(good_coach)                   AS avg_good_coach,
+        AVG(empowers_team)                AS avg_empowers_team,
+        AVG(inclusive_environment)        AS avg_inclusive_environment,
+        AVG(results_oriented)             AS avg_results_oriented,
+        AVG(good_communicator)            AS avg_good_communicator,
+        AVG(supports_career_development)  AS avg_supports_career_development,
+        AVG(clear_vision)                 AS avg_clear_vision,
+        AVG(technical_competence)         AS avg_technical_competence
+    FROM survey_responses
+    GROUP BY manager_id
+),
+raw_scores AS (
+    SELECT
+        manager_id,
+        (avg_good_coach
+         + avg_empowers_team
+         + avg_inclusive_environment
+         + avg_results_oriented
+         + avg_good_communicator
+         + avg_supports_career_development
+         + avg_clear_vision
+         + avg_technical_competence) / 8.0  AS raw_score_1_to_5
+    FROM behavior_averages
+)
+SELECT
+    r.manager_id,
+    m.manager_name,
+    m.department,
+    ROUND(r.raw_score_1_to_5, 3)                            AS raw_score,
+    ROUND((r.raw_score_1_to_5 - 1) / 4.0 * 100, 1)        AS effectiveness_score_0_to_100
+FROM raw_scores r
+JOIN managers m ON r.manager_id = m.manager_id
+ORDER BY effectiveness_score_0_to_100 DESC;
+
+
+-- -----------------------------------------------------------------------------
+-- QUERY 3: Effectiveness score joined with team outcomes
+-- Combines the composite score with attrition, engagement, and performance
+-- so correlations can be explored in a single flat table.
+-- -----------------------------------------------------------------------------
+
+WITH behavior_averages AS (
+    SELECT
+        manager_id,
+        (AVG(good_coach)
+         + AVG(empowers_team)
+         + AVG(inclusive_environment)
+         + AVG(results_oriented)
+         + AVG(good_communicator)
+         + AVG(supports_career_development)
+         + AVG(clear_vision)
+         + AVG(technical_competence)) / 8.0  AS raw_score
+    FROM survey_responses
+    GROUP BY manager_id
+)
+SELECT
+    m.manager_id,
+    m.manager_name,
+    m.department,
+    m.team_size,
+    ROUND((ba.raw_score - 1) / 4.0 * 100, 1)   AS effectiveness_score,
+    o.team_attrition_rate,
+    o.team_engagement_score,
+    o.team_performance_score
+FROM behavior_averages ba
+JOIN managers m       ON ba.manager_id = m.manager_id
+JOIN team_outcomes o  ON ba.manager_id = o.manager_id
+ORDER BY effectiveness_score DESC;
+
+
+-- -----------------------------------------------------------------------------
+-- QUERY 4: Department-level summary
+-- Aggregates effectiveness and outcomes at the department level.
+-- Useful for identifying which departments have the strongest management.
+-- -----------------------------------------------------------------------------
+
+WITH manager_scores AS (
+    SELECT
+        s.manager_id,
+        m.department,
+        (AVG(s.good_coach)
+         + AVG(s.empowers_team)
+         + AVG(s.inclusive_environment)
+         + AVG(s.results_oriented)
+         + AVG(s.good_communicator)
+         + AVG(s.supports_career_development)
+         + AVG(s.clear_vision)
+         + AVG(s.technical_competence)) / 8.0  AS raw_score
+    FROM survey_responses s
+    JOIN managers m ON s.manager_id = m.manager_id
+    GROUP BY s.manager_id, m.department
+)
+SELECT
+    ms.department,
+    COUNT(ms.manager_id)                                                 AS num_managers,
+    ROUND(AVG((ms.raw_score - 1) / 4.0 * 100), 1)                      AS avg_effectiveness_score,
+    ROUND(AVG(o.team_attrition_rate) * 100, 1)                         AS avg_attrition_pct,
+    ROUND(AVG(o.team_engagement_score), 1)                              AS avg_engagement_score,
+    ROUND(AVG(o.team_performance_score), 1)                             AS avg_performance_score
+FROM manager_scores ms
+JOIN team_outcomes o ON ms.manager_id = o.manager_id
+GROUP BY ms.department
+ORDER BY avg_effectiveness_score DESC;
+
+
+-- -----------------------------------------------------------------------------
+-- QUERY 5: Top and bottom 10 managers by effectiveness score
+-- A quick-reference leaderboard for stakeholder reporting.
+-- -----------------------------------------------------------------------------
+
+WITH effectiveness AS (
+    SELECT
+        s.manager_id,
+        m.manager_name,
+        m.department,
+        ROUND(
+            ((AVG(s.good_coach)
+              + AVG(s.empowers_team)
+              + AVG(s.inclusive_environment)
+              + AVG(s.results_oriented)
+              + AVG(s.good_communicator)
+              + AVG(s.supports_career_development)
+              + AVG(s.clear_vision)
+              + AVG(s.technical_competence)) / 8.0 - 1) / 4.0 * 100,
+            1
+        )  AS effectiveness_score
+    FROM survey_responses s
+    JOIN managers m ON s.manager_id = m.manager_id
+    GROUP BY s.manager_id, m.manager_name, m.department
+)
+-- Top 10
+SELECT manager_id, manager_name, department, effectiveness_score, 'Top 10' AS cohort
+FROM effectiveness
+ORDER BY effectiveness_score DESC
+LIMIT 10
+
+UNION ALL
+
+-- Bottom 10
+SELECT manager_id, manager_name, department, effectiveness_score, 'Bottom 10' AS cohort
+FROM effectiveness
+ORDER BY effectiveness_score ASC
+LIMIT 10;
+
+
+-- -----------------------------------------------------------------------------
+-- QUERY 6: Behavior gap analysis
+-- Identifies the weakest behavior area for each manager.
+-- Useful for targeted coaching recommendations.
+-- -----------------------------------------------------------------------------
+
+WITH behavior_avgs AS (
+    SELECT
+        manager_id,
+        ROUND(AVG(good_coach), 2)                   AS good_coach,
+        ROUND(AVG(empowers_team), 2)                AS empowers_team,
+        ROUND(AVG(inclusive_environment), 2)        AS inclusive_environment,
+        ROUND(AVG(results_oriented), 2)             AS results_oriented,
+        ROUND(AVG(good_communicator), 2)            AS good_communicator,
+        ROUND(AVG(supports_career_development), 2)  AS supports_career_development,
+        ROUND(AVG(clear_vision), 2)                 AS clear_vision,
+        ROUND(AVG(technical_competence), 2)         AS technical_competence
+    FROM survey_responses
+    GROUP BY manager_id
+)
+SELECT
+    ba.manager_id,
+    m.manager_name,
+    m.department,
+    LEAST(
+        ba.good_coach,
+        ba.empowers_team,
+        ba.inclusive_environment,
+        ba.results_oriented,
+        ba.good_communicator,
+        ba.supports_career_development,
+        ba.clear_vision,
+        ba.technical_competence
+    )  AS lowest_behavior_score,
+    CASE
+        WHEN ba.good_coach = LEAST(ba.good_coach, ba.empowers_team, ba.inclusive_environment, ba.results_oriented, ba.good_communicator, ba.supports_career_development, ba.clear_vision, ba.technical_competence)
+            THEN 'good_coach'
+        WHEN ba.empowers_team = LEAST(ba.good_coach, ba.empowers_team, ba.inclusive_environment, ba.results_oriented, ba.good_communicator, ba.supports_career_development, ba.clear_vision, ba.technical_competence)
+            THEN 'empowers_team'
+        WHEN ba.inclusive_environment = LEAST(ba.good_coach, ba.empowers_team, ba.inclusive_environment, ba.results_oriented, ba.good_communicator, ba.supports_career_development, ba.clear_vision, ba.technical_competence)
+            THEN 'inclusive_environment'
+        WHEN ba.results_oriented = LEAST(ba.good_coach, ba.empowers_team, ba.inclusive_environment, ba.results_oriented, ba.good_communicator, ba.supports_career_development, ba.clear_vision, ba.technical_competence)
+            THEN 'results_oriented'
+        WHEN ba.good_communicator = LEAST(ba.good_coach, ba.empowers_team, ba.inclusive_environment, ba.results_oriented, ba.good_communicator, ba.supports_career_development, ba.clear_vision, ba.technical_competence)
+            THEN 'good_communicator'
+        WHEN ba.supports_career_development = LEAST(ba.good_coach, ba.empowers_team, ba.inclusive_environment, ba.results_oriented, ba.good_communicator, ba.supports_career_development, ba.clear_vision, ba.technical_competence)
+            THEN 'supports_career_development'
+        WHEN ba.clear_vision = LEAST(ba.good_coach, ba.empowers_team, ba.inclusive_environment, ba.results_oriented, ba.good_communicator, ba.supports_career_development, ba.clear_vision, ba.technical_competence)
+            THEN 'clear_vision'
+        ELSE 'technical_competence'
+    END  AS weakest_behavior
+FROM behavior_avgs ba
+JOIN managers m ON ba.manager_id = m.manager_id
+ORDER BY lowest_behavior_score ASC;
